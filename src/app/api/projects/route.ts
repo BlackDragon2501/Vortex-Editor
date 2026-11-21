@@ -6,13 +6,14 @@
 // DELETE /api/projects/:id    -> elimina un proyecto
 
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { ensureSchema, getDB } from '@/lib/db'
 
 const MAX_DATA_BYTES = 64 * 1024 * 1024 // 64 MB por proyecto
 
 export async function GET() {
   try {
-    const projects = await db.editorProject.findMany({
+    await ensureSchema()
+    const projects = await getDB().editorProject.findMany({
       orderBy: { updatedAt: 'desc' },
       select: {
         id: true,
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
     if (data.length > MAX_DATA_BYTES) {
       return NextResponse.json({ error: 'El proyecto es demasiado grande para guardarlo' }, { status: 413 })
     }
-    const project = await db.editorProject.create({
+    const project = await getDB().editorProject.create({
       data: { name, width: Math.round(width), height: Math.round(height), thumbnail, data },
       select: { id: true, name: true, updatedAt: true },
     })

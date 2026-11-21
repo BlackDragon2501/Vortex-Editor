@@ -26,7 +26,17 @@ por un proveedor gestionado (Neon/Supabase/etc.) ajustando `prisma/schema.prisma
 
 1. Sube este repositorio a GitHub (ya está preparado como repo independiente).
 2. Importa el repo en Vercel (framework: Next.js detectado automáticamente).
-3. Copia la URL entregada por Vercel en el portal Vórtex Studio
+3. Agrega **una sola variable de entorno** en *Settings → Environment Variables*:
+
+   | Variable | Valor |
+   |---|---|
+   | `DATABASE_URL` | `file:/tmp/vortex-editor.db` |
+
+   La API crea la tabla automáticamente en el primer uso. Ten en cuenta que
+   `/tmp` es efímero en serverless: los proyectos guardados se reinician en
+   cada despliegue o instancia fría. Para persistencia real, migra el
+   datasource a un Postgres gestionado (Neon/Supabase) o Turso.
+4. Copia la URL entregada por Vercel en el portal Vórtex Studio
    (`repos/vortex-portal/src/lib/apps.ts` → `APP_URLS.editor`).
 
 ## Suite Vórtex

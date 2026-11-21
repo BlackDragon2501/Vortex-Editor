@@ -1,7 +1,7 @@
 // Operaciones sobre un proyecto concreto de Vórtex Editor.
 
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { ensureSchema, getDB } from '@/lib/db'
 
 const MAX_DATA_BYTES = 64 * 1024 * 1024
 
@@ -10,7 +10,8 @@ type Ctx = { params: Promise<{ id: string }> }
 export async function GET(_req: Request, ctx: Ctx) {
   try {
     const { id } = await ctx.params
-    const project = await db.editorProject.findUnique({
+    await ensureSchema()
+    const project = await getDB().editorProject.findUnique({
       where: { id },
       select: { id: true, name: true, width: true, height: true, data: true, updatedAt: true },
     })
@@ -39,7 +40,7 @@ export async function PUT(req: Request, ctx: Ctx) {
         return NextResponse.json({ error: 'El proyecto es demasiado grande para guardarlo' }, { status: 413 })
       }
     }
-    const project = await db.editorProject.update({
+    const project = await getDB().editorProject.update({
       where: { id },
       data: {
         ...(name !== undefined ? { name } : {}),
@@ -60,7 +61,7 @@ export async function PUT(req: Request, ctx: Ctx) {
 export async function DELETE(_req: Request, ctx: Ctx) {
   try {
     const { id } = await ctx.params
-    await db.editorProject.delete({ where: { id } })
+    await getDB().editorProject.delete({ where: { id } })
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('DELETE /api/projects/[id]', err)
