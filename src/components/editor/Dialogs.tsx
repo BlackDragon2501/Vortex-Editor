@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useEditor } from '@/lib/editor/store'
+import { toast } from '@/hooks/use-toast'
 import { addNoise, pixelate } from '@/lib/editor/filters'
 import { computeHistogram } from '@/lib/editor/adjustments'
 import { CurveEditor, HistogramCanvas } from './CurveEditor'
@@ -190,6 +191,20 @@ function NewDocDialog() {
     e.target.value = ''
     if (!file) return
     setImporting(true)
+    // Las imagenes (jpg, jpeg, png, webp) se abren como documento/capa;
+    // los archivos .vortex.json se importan como proyecto completo.
+    const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name)
+    if (isImage) {
+      try {
+        await s.openImageFile(file)
+        setImporting(false)
+        s.setDialog(null)
+      } catch {
+        setImporting(false)
+        toast({ title: 'Imagen invalida', description: 'No se pudo abrir la imagen (jpg, jpeg, png o webp).', variant: 'destructive' })
+      }
+      return
+    }
     const ok = await s.importProjectFile(file)
     setImporting(false)
     if (ok) s.setDialog(null)
@@ -204,7 +219,7 @@ function NewDocDialog() {
             Bienvenido a <span className="text-violet-400">Vórtex</span> Editor
           </DialogTitle>
           <DialogDescription className="text-xs">
-            Abre un proyecto guardado en el almacenamiento, importa un archivo de proyecto o crea un documento nuevo.
+            Abre un proyecto guardado en el almacenamiento, importa un archivo de proyecto o una imagen (jpg, jpeg, png, webp), o crea un documento nuevo.
           </DialogDescription>
         </DialogHeader>
 
@@ -288,7 +303,7 @@ function NewDocDialog() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".vortex.json,.json,application/json"
+            accept=".vortex.json,.json,application/json,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
             className="hidden"
             onChange={(e) => void handleImportFile(e)}
             aria-hidden
@@ -306,7 +321,7 @@ function NewDocDialog() {
             ) : (
               <FileUp className="w-3.5 h-3.5" aria-hidden />
             )}
-            Importar archivo de proyecto (.vortex.json)
+            Importar proyecto o imagen (.vortex.json · jpg · png · webp)
           </Button>
         </section>
 

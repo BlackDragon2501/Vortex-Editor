@@ -408,7 +408,15 @@ export const useEditor = create<EditorState>((set, get) => ({
         image.src = url
       })
       const state = get()
-      if (state.width === 0 || state.layers.length === 0) {
+      // Documento virgen: el documento por defecto que EditorShell crea al montar
+      // (o uno recien creado) sin ninguna edicion del usuario. En ese caso la
+      // imagen abre como documento propio con el tamano de la imagen; si el
+      // usuario ya tiene trabajo real en el lienzo, se agrega como capa.
+      const pristine =
+        state.history.length <= 1 &&
+        state.historyIndex <= 0 &&
+        state.layers.length <= 1
+      if (state.width === 0 || state.layers.length === 0 || pristine) {
         // crea un documento nuevo con el tamano de la imagen
         set({
           docName: file.name.replace(/\.[^.]+$/, ''),
@@ -417,8 +425,12 @@ export const useEditor = create<EditorState>((set, get) => ({
           fitRequest: get().fitRequest + 1,
         })
         get().addLayerFromImage(img, file.name.replace(/\.[^.]+$/, ''))
-        const layer = get().layers[0]
+        // la nueva capa de imagen es la ultima del arreglo; si habia un
+        // documento virgen con capa Fondo, se descarta y queda solo la imagen
+        const layer = get().layers[get().layers.length - 1]
         set({
+          layers: [layer],
+          activeLayerId: layer.id,
           history: [
             {
               label: 'Abrir imagen',
