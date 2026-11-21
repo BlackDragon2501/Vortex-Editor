@@ -1,0 +1,23 @@
+// Esquema de Vórtex Editor: proyectos guardados por el usuario.
+// Un proyecto almacena el documento completo (capas en PNG base64 +
+// capas de ajuste con sus parametros) como JSON serializado.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model EditorProject {
+  id        String   @id @default(cuid())
+  name      String
+  width     Int
+  height    Int
+  thumbnail String // miniatura PNG en base64 para la lista de proyectos
+  data      String // documento completo serializado (JSON: capas + ajustes)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
