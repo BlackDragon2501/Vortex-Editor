@@ -6,6 +6,15 @@
 // de ahi todo corre offline en el dispositivo: GPU via WebGPU, o CPU via WASM
 // SIMD como respaldo. Nada sale del navegador durante la inferencia.
 //
+// NOTA sobre bundles de ORT-web: para WebGPU se carga el bundle dedicado
+// ort.webgpu.min.js. El bundle por defecto (ort.min.js) tiene un bug
+// off-by-one en la operacion Slice con paso negativo (clampa end a 0 en vez
+// de -1) que rompe el modelo LaMa en WebGPU: el kernel Add de las capas FFC
+// falla en plena ejecucion con ORT_FAIL ("error code 6"). El bundle webgpu
+// no tiene ese bug; el path WASM de cualquier bundle es correcto. Ademas,
+// si la GPU falla en plena ejecucion, se reintenta automaticamente en CPU
+// sin perder las teselas ya procesadas.
+//
 // Detalles verificados empiricamente contra lama_fp32.onnx:
 //   input  'image'  float32 [1,3,512,512]  valores 0..1
 //   input  'mask'   float32 [1,1,512,512]  binario 0/1, 1 = hueco a rellenar
@@ -181,10 +190,12 @@ let cachedWorker: VortexLamaWorker | null = null
 let cachedBackend: 'webgpu' | 'wasm' | null = null
 let creatingPromise: Promise<VortexLamaWorker> | null = null
 
-function buildWorkerSource(): string {
+function buildWorkerSource(useWebgpuBundle: boolean): string {
   // Worker clasico por Blob: carga ORT-web desde CDN (mismo patron que el
   // runtime de Tesseract.js en Vortex Lens) y ejecuta la sesion fuera del hilo
-  // de la UI para que el progreso siga animando.
+  // de la UI para que el progreso siga animando. El bundle elegido depende del
+  // backend preferido (ver NOTA arriba sobre el bug de Slice en el default).
+  const bundle = useWebgpuBundle ? `${ORT_CDN}ort.webgpu.min.js` : `${ORT_CDN}ort.min.js`
   return `
 var ort = null
 var session = null
@@ -192,7 +203,7 @@ var session = null
 function post(m) { self.postMessage(m) }
 
 async function createSession(model, preferBackend) {
-  importScripts('${ORT_CDN}ort.min.js')
+  importScripts('${bundle}')
   ort = self.ort
   ort.env.wasm.wasmPaths = '${ORT_CDN}'
   var threadsOk = typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated
@@ -249,7 +260,7 @@ function createLamaWorker(model: ArrayBuffer, preferBackend: 'webgpu' | 'wasm'):
   creatingPromise = new Promise((resolve, reject) => {
     let worker: VortexLamaWorker
     try {
-      const blob = new Blob([buildWorkerSource()], { type: 'text/javascript' })
+      const blob = new Blob([buildWorkerSource(preferBackend === 'webgpu')], { type: 'text/javascript' })
       worker = new Worker(URL.createObjectURL(blob)) as VortexLamaWorker
     } catch (err) {
       creatingPromise = null
@@ -316,6 +327,23 @@ export function lamaActiveBackend(): 'webgpu' | 'wasm' | null {
 }
 
 // ---------------------------------------------------------------- utilidades
+
+/** Convierte errores crudos de ORT/WebGPU en mensajes legibles para el usuario. */
+function describeLamaError(err: unknown): Error {
+  const raw = String((err instanceof Error ? err.message : err) || '')
+  if (/error code\s*=\s*\d+|ORT_FAIL|kernel|WebGPU|GPUBuffer|GPU device|binary op/i.test(raw)) {
+    return new Error(
+      'La GPU de tu dispositivo no pudo ejecutar el motor neuronal (ya se reintento en CPU y fallo tambien). ' +
+      'Usa el motor clasico (rapido, sin descarga) o reduce el tamano de la seleccion. Detalle: ' + raw.slice(0, 160)
+    )
+  }
+  if (/OOM|abort|memory|allocat/i.test(raw)) {
+    return new Error(
+      'Tu dispositivo se quedo sin memoria al procesar con IA. Cierra otras pestanas o usa el motor clasico. Detalle: ' + raw.slice(0, 160)
+    )
+  }
+  return err instanceof Error ? err : new Error(raw)
+}
 
 function reflectIndex(i: number, n: number): number {
   if (n === 1) return 0
@@ -459,58 +487,91 @@ export async function lamaInpaint(
     if (!model) throw new Error('No se pudo recuperar el modelo desde el almacenamiento local')
   }
 
-  // 5. worker + sesion (WebGPU con respaldo WASM)
-  if (!cachedWorker || !cachedWorker.__ready) {
+  // 5. worker + sesion (WebGPU con respaldo WASM). Si crear la sesion con
+  // WebGPU falla (adapter inestable, driver), se reintenta en CPU.
+  const ensureWorker = async (prefer: 'webgpu' | 'wasm') => {
     onProgress({ stage: 'loading-model' })
-    cachedWorker = await createLamaWorker(model, 'webgpu')
+    let m = await opfsReadModel()
+    if (!m) m = await idbReadModel()
+    if (!m) throw new Error('No se pudo recuperar el modelo desde el almacenamiento local')
+    cachedWorker = await createLamaWorker(m, prefer)
   }
-  model = null // el worker ya tiene la copia transferida
+  try {
+    if (!cachedWorker || !cachedWorker.__ready) await ensureWorker('webgpu')
+  } catch {
+    cachedWorker = null
+    cachedBackend = null
+    await ensureWorker('wasm')
+  }
+  model = null // liberar la copia local; el worker carga la suya desde el almacenamiento
   onProgress({ stage: 'engine', backend: cachedBackend || 'wasm' })
 
-  // 6. ejecucion por teselas con acumulador ponderado
+  // 6. ejecucion por teselas con acumulador ponderado. Si la GPU falla en
+  // plena ejecucion (kernel WebGPU, driver), se reintenta UNA vez en CPU
+  // (WASM SIMD) sin perder las teselas ya procesadas: los pesos acumulados
+  // son validos con cualquier backend (salidas numericamente equivalentes).
   const sumV = new Float32Array(rw * rh * 3)
   const sumW = new Float32Array(rw * rh)
   let done = 0
-  for (const t of tiles) {
-    const { tx, ty, tw, th } = t
-    const image = new Float32Array(3 * TILE * TILE)
-    const tileMask = new Float32Array(TILE * TILE)
-    for (let y = 0; y < TILE; y++) {
-      const sy = reflectIndex(y, th)
-      for (let x = 0; x < TILE; x++) {
-        const sx = reflectIndex(x, tw)
-        const s = sy * tw + sx
-        const d = y * TILE + x
-        const p = s * 4
-        image[d * 3] = region.data[p] / 255
-        image[d * 3 + 1] = region.data[p + 1] / 255
-        image[d * 3 + 2] = region.data[p + 2] / 255
-        tileMask[d] = maskDilated[s] > 0 ? 1 : 0
+  const runRemaining = async () => {
+    for (; done < tiles.length; done++) {
+      const t = tiles[done]
+      const { tx, ty, tw, th } = t
+      const image = new Float32Array(3 * TILE * TILE)
+      const tileMask = new Float32Array(TILE * TILE)
+      for (let y = 0; y < TILE; y++) {
+        const sy = reflectIndex(y, th)
+        for (let x = 0; x < TILE; x++) {
+          const sx = reflectIndex(x, tw)
+          const s = sy * tw + sx
+          const d = y * TILE + x
+          const p = s * 4
+          image[d * 3] = region.data[p] / 255
+          image[d * 3 + 1] = region.data[p + 1] / 255
+          image[d * 3 + 2] = region.data[p + 2] / 255
+          tileMask[d] = maskDilated[s] > 0 ? 1 : 0
+        }
       }
-    }
-    const out = await runTile(cachedWorker, image, tileMask, done)
-    // pesos de mezcla: rampa de 0 a 1 en los bordes con solape; los bordes que
-    // coinciden con el borde de la region mantienen peso 1 (sin rampa)
-    for (let y = 0; y < th; y++) {
-      const dEdgeTop = ty === 0 ? Number.MAX_SAFE_INTEGER : y
-      const dEdgeBottom = ty + th >= rh ? Number.MAX_SAFE_INTEGER : th - 1 - y
-      const wy = Math.min(1, Math.min(dEdgeTop, dEdgeBottom) / 64)
-      for (let x = 0; x < tw; x++) {
-        const dEdgeLeft = tx === 0 ? Number.MAX_SAFE_INTEGER : x
-        const dEdgeRight = tx + tw >= rw ? Number.MAX_SAFE_INTEGER : tw - 1 - x
-        const wgt = Math.min(wy, Math.min(1, Math.min(dEdgeLeft, dEdgeRight) / 64))
-        const s = y * tw + x
-        if (maskDilated[s] === 0 || wgt <= 0) continue
-        const d = (y * TILE + x) * 3
-        const p = s * 3
-        sumV[p] += out[d] * wgt
-        sumV[p + 1] += out[d + 1] * wgt
-        sumV[p + 2] += out[d + 2] * wgt
-        sumW[s] += wgt
+      const out = await runTile(cachedWorker!, image, tileMask, done)
+      // pesos de mezcla: rampa de 0 a 1 en los bordes con solape; los bordes que
+      // coinciden con el borde de la region mantienen peso 1 (sin rampa)
+      for (let y = 0; y < th; y++) {
+        const dEdgeTop = ty === 0 ? Number.MAX_SAFE_INTEGER : y
+        const dEdgeBottom = ty + th >= rh ? Number.MAX_SAFE_INTEGER : th - 1 - y
+        const wy = Math.min(1, Math.min(dEdgeTop, dEdgeBottom) / 64)
+        for (let x = 0; x < tw; x++) {
+          const dEdgeLeft = tx === 0 ? Number.MAX_SAFE_INTEGER : x
+          const dEdgeRight = tx + tw >= rw ? Number.MAX_SAFE_INTEGER : tw - 1 - x
+          const wgt = Math.min(wy, Math.min(1, Math.min(dEdgeLeft, dEdgeRight) / 64))
+          const s = y * tw + x
+          if (maskDilated[s] === 0 || wgt <= 0) continue
+          const d = (y * TILE + x) * 3
+          const p = s * 3
+          sumV[p] += out[d] * wgt
+          sumV[p + 1] += out[d + 1] * wgt
+          sumV[p + 2] += out[d + 2] * wgt
+          sumW[s] += wgt
+        }
       }
+      onProgress({ stage: 'tiles', done: done + 1, total: tiles.length })
     }
-    done++
-    onProgress({ stage: 'tiles', done, total: tiles.length })
+  }
+  let retried = false
+  try {
+    await runRemaining()
+  } catch (err) {
+    if (retried || cachedBackend !== 'webgpu') throw describeLamaError(err)
+    retried = true
+    try { cachedWorker?.terminate() } catch { /* ya muerto */ }
+    cachedWorker = null
+    cachedBackend = null
+    await ensureWorker('wasm')
+    onProgress({ stage: 'engine', backend: cachedBackend || 'wasm' })
+    try {
+      await runRemaining()
+    } catch (err2) {
+      throw describeLamaError(err2)
+    }
   }
 
   // 7. escritura del resultado solo en los pixeles del hueco original
