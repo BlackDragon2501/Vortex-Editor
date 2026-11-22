@@ -25,6 +25,7 @@ import { useEditor } from '@/lib/editor/store'
 import { toast } from '@/hooks/use-toast'
 import { addNoise, pixelate } from '@/lib/editor/filters'
 import { computeHistogram } from '@/lib/editor/adjustments'
+import { LAMA_MODEL_BYTES, lamaModelCached, prefetchLamaModel } from '@/lib/editor/lama'
 import { CurveEditor, HistogramCanvas } from './CurveEditor'
 import type { Anchor, ColorBalanceParams, CurvePoint, CurveSet } from '@/lib/editor/types'
 import {
@@ -832,21 +833,101 @@ function LevelsDialog() {
 
 function InpaintDialog() {
   const s = useEditor()
+  const [engine, setEngine] = useState<'neural' | 'classic'>('neural')
   const [quality, setQuality] = useState(3)
   const [texture, setTexture] = useState(true)
   const [working, setWorking] = useState(false)
+  const [cached, setCached] = useState<boolean | null>(null)
+  const [backend, setBackend] = useState<'webgpu' | 'wasm' | null>(null)
+  const [phase, setPhase] = useState('')
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null)
+  const [tileInfo, setTileInfo] = useState('')
   const hasSelection = !!s.selection
   const activePixel = s.layers.some((l) => l.id === s.activeLayerId && l.kind === 'pixel')
   const canRun = hasSelection && activePixel && !working
 
-  const run = () => {
+  useEffect(() => {
+    lamaModelCached().then(setCached)
+  }, [])
+
+  const run = async () => {
+    if (engine === 'classic') {
+      setWorking(true)
+      setTimeout(() => {
+        s.applyInpaint({ quality, texture })
+        setWorking(false)
+        s.setDialog(null)
+      }, 50)
+      return
+    }
     setWorking(true)
-    setTimeout(() => {
-      s.applyInpaint({ quality, texture })
+    setPhase('')
+    setProgress(null)
+    setTileInfo('')
+    try {
+      const ok = await s.applyInpaintNeural((p) => {
+        if (p.stage === 'checking') setPhase('Comprobando modelo local...')
+        else if (p.stage === 'downloading') {
+          setPhase('Descargando modelo (solo la primera vez)...')
+          setProgress({ loaded: p.loaded, total: p.total })
+        } else if (p.stage === 'saving') setPhase('Guardando el modelo en tu dispositivo...')
+        else if (p.stage === 'reading-cache') setPhase('Leyendo el modelo desde tu almacenamiento...')
+        else if (p.stage === 'loading-model') setPhase('Cargando el modelo en el motor local...')
+        else if (p.stage === 'engine') {
+          setBackend(p.backend)
+          setPhase(p.backend === 'webgpu' ? 'Motor listo: GPU (WebGPU)' : 'Motor listo: CPU (WASM SIMD)')
+        } else if (p.stage === 'tiles') {
+          setPhase('Reconstruyendo la zona con LaMa...')
+          setTileInfo(`${p.done} / ${p.total}`)
+        } else if (p.stage === 'done') setPhase('Listo')
+      })
+      if (ok) {
+        setCached(true)
+        s.setDialog(null)
+      } else {
+        toast({ title: 'Relleno IA', description: 'No hay zona seleccionada que rellenar.' })
+      }
+    } catch (err) {
+      toast({
+        title: 'Error del motor IA',
+        description: err instanceof Error ? err.message : String(err),
+        variant: 'destructive',
+      })
+    } finally {
       setWorking(false)
-      s.setDialog(null)
-    }, 50)
+      setPhase('')
+      setProgress(null)
+      setTileInfo('')
+    }
   }
+
+  const downloadModel = async () => {
+    setWorking(true)
+    setProgress(null)
+    try {
+      await prefetchLamaModel((p) => {
+        if (p.stage === 'checking') setPhase('Comprobando modelo local...')
+        else if (p.stage === 'downloading') {
+          setPhase('Descargando modelo...')
+          setProgress({ loaded: p.loaded, total: p.total })
+        } else if (p.stage === 'saving') setPhase('Guardando el modelo en tu dispositivo...')
+        else if (p.stage === 'done') setPhase('Listo')
+      })
+      setCached(true)
+    } catch (err) {
+      toast({
+        title: 'Error al descargar el modelo',
+        description: err instanceof Error ? err.message : String(err),
+        variant: 'destructive',
+      })
+    } finally {
+      setWorking(false)
+      setPhase('')
+      setProgress(null)
+    }
+  }
+
+  const pct = progress && progress.total > 0 ? Math.min(100, Math.round((progress.loaded / progress.total) * 100)) : null
 
   return (
     <Dialog open onOpenChange={(o) => !o && s.setDialog(null)}>
@@ -856,7 +937,7 @@ function InpaintDialog() {
             <Sparkles className="w-3.5 h-3.5 text-amber-500" /> Relleno segun contenido (IA)
           </DialogTitle>
           <DialogDescription className="text-xs">
-            La IA reconstruye la zona seleccionada sintetizando contenido a partir del entorno.
+            Elimina texto y marcas de agua reconstruyendo la zona seleccionada. Dos motores, ambos 100% locales.
           </DialogDescription>
         </DialogHeader>
         <div className="py-1 space-y-4">
@@ -876,23 +957,99 @@ function InpaintDialog() {
               Seleccionar todo (Ctrl+A)
             </Button>
           )}
-          <div className="space-y-2">
-            <div className="flex justify-between text-xs">
-              <Label>Calidad de sintesis</Label>
-              <span className="tabular-nums text-muted-foreground">{quality} / 5</span>
+          <RadioGroup value={engine} onValueChange={(v) => setEngine(v as 'neural' | 'classic')} className="gap-2">
+            <label
+              className={`flex items-start gap-2 rounded border px-3 py-2 cursor-pointer text-xs ${
+                engine === 'neural' ? 'border-amber-500/60 bg-amber-500/10' : 'border-border'
+              }`}
+            >
+              <RadioGroupItem value="neural" className="mt-0.5" />
+              <span>
+                <span className="font-medium text-foreground">IA neuronal LaMa (recomendado)</span>
+                <span className="block text-[10.5px] text-muted-foreground">
+                  Maxima calidad: reconstruye texturas reales. Ideal para marcas de agua y texto sobre fondos
+                  complejos. Primera vez descarga el modelo ({Math.round(LAMA_MODEL_BYTES / 1048576)} MB).
+                </span>
+              </span>
+            </label>
+            <label
+              className={`flex items-start gap-2 rounded border px-3 py-2 cursor-pointer text-xs ${
+                engine === 'classic' ? 'border-amber-500/60 bg-amber-500/10' : 'border-border'
+              }`}
+            >
+              <RadioGroupItem value="classic" className="mt-0.5" />
+              <span>
+                <span className="font-medium text-foreground">Motor clasico (rapido)</span>
+                <span className="block text-[10.5px] text-muted-foreground">
+                  Difusion multi-escala instantanea, sin descargas. Mejor para zonas pequenas y fondos suaves.
+                </span>
+              </span>
+            </label>
+          </RadioGroup>
+
+          {engine === 'neural' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>Modelo en tu dispositivo:</span>
+                <span className={cached ? 'text-emerald-400' : 'text-amber-400'}>
+                  {cached === null ? 'Comprobando...' : cached ? 'Descargado' : 'No descargado'}
+                </span>
+              </div>
+              {backend && (
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>Aceleracion detectada:</span>
+                  <span className={backend === 'webgpu' ? 'text-emerald-400' : 'text-foreground'}>
+                    {backend === 'webgpu' ? 'GPU - WebGPU' : 'CPU - WASM SIMD'}
+                  </span>
+                </div>
+              )}
+              {cached === false && !working && (
+                <Button variant="outline" size="sm" className="h-7 text-xs w-full" onClick={downloadModel}>
+                  Descargar modelo ahora ({Math.round(LAMA_MODEL_BYTES / 1048576)} MB, una sola vez)
+                </Button>
+              )}
             </div>
-            <Slider value={[quality]} min={1} max={5} onValueChange={(v) => setQuality(v[0])} />
-            <p className="text-[10.5px] text-muted-foreground">Mas calidad = reconstruccion mas detallada (tarda unos segundos)</p>
-          </div>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={texture}
-              onChange={(e) => setTexture(e.target.checked)}
-              className="accent-amber-500"
-            />
-            Transferir textura del entorno (grano y detalle)
-          </label>
+          )}
+
+          {engine === 'classic' && (
+            <>
+              <div className="space-y-2">
+                <div className="flex justify-between text-xs">
+                  <Label>Calidad de sintesis</Label>
+                  <span className="tabular-nums text-muted-foreground">{quality} / 5</span>
+                </div>
+                <Slider value={[quality]} min={1} max={5} onValueChange={(v) => setQuality(v[0])} />
+                <p className="text-[10.5px] text-muted-foreground">
+                  Mas calidad = reconstruccion mas detallada (tarda unos segundos)
+                </p>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={texture}
+                  onChange={(e) => setTexture(e.target.checked)}
+                  className="accent-amber-500"
+                />
+                Transferir textura del entorno (grano y detalle)
+              </label>
+            </>
+          )}
+
+          {working && phase && (
+            <div className="space-y-1.5 rounded border border-border px-3 py-2">
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" /> {phase}
+                </span>
+                {tileInfo && <span className="tabular-nums">tesela {tileInfo}</span>}
+              </div>
+              {pct !== null && (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="h-full bg-amber-500 transition-all" style={{ width: `${pct}%` }} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => s.setDialog(null)} className="text-xs">
@@ -904,7 +1061,7 @@ function InpaintDialog() {
             onClick={run}
             disabled={!canRun}
           >
-            {working ? 'Generando...' : 'Generar relleno'}
+            {working ? 'Procesando...' : engine === 'neural' ? 'Eliminar con IA neuronal' : 'Generar relleno'}
           </Button>
         </DialogFooter>
       </DialogContent>

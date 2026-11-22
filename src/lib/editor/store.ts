@@ -48,6 +48,7 @@ import { compositeLayers } from './compose'
 import { makeSelection, makeSelectionFromMask } from './selection'
 import { applyAdjustmentPixels } from './adjustments'
 import { autoEnhance, inpaintCanvas, type InpaintOptions } from './inpaint'
+import { lamaInpaint, type LamaProgress } from './lama'
 import { deserializeProject, downloadProjectFile, makeThumbnail, serializeProject } from './project'
 import { toast } from '@/hooks/use-toast'
 
@@ -208,6 +209,7 @@ export interface EditorState {
   // Ajustes e IA
   applyAdjustmentToLayer: (label: string, adj: Adjustment) => void
   applyInpaint: (opts: InpaintOptions) => void
+  applyInpaintNeural: (onProgress?: (p: LamaProgress) => void) => Promise<boolean>
   applyAutoEnhance: () => void
   editAdjustmentLayer: (id: string) => void
 
@@ -1224,6 +1226,38 @@ export const useEditor = create<EditorState>((set, get) => ({
     lc.putImageData(li, 0, 0)
     set({ rev: state.rev + 1 })
     get().pushHistory('Relleno segun contenido (IA)')
+  },
+
+  // Inpainting neuronal LaMa: elimina texto y marcas de agua reconstruyendo
+  // la zona con el modelo big-lama (WebGPU con respaldo WASM, 100% local).
+  applyInpaintNeural: async (onProgress) => {
+    const state = get()
+    if (!state.selection) return false
+    const layer = getActiveLayer(state)
+    if (!layer) return false
+    const comp = get().renderComposite()
+    const filled = cloneCanvasEl(comp)
+    const ok = await lamaInpaint(filled, state.selection.mask, (p) => onProgress?.(p))
+    if (!ok) return false
+    // transferencia por diferencia: capa + (relleno - composicion), identica
+    // al motor clasico para respetar la opacidad y el modo de fusion de la capa
+    const lc = layer.canvas.getContext('2d')!
+    const li = lc.getImageData(0, 0, state.width, state.height)
+    const ci = comp.getContext('2d')!.getImageData(0, 0, state.width, state.height)
+    const fi = filled.getContext('2d')!.getImageData(0, 0, state.width, state.height)
+    const mask = state.selection.mask
+    for (let p = 0; p < state.width * state.height; p++) {
+      if (mask[p] === 0) continue
+      const i = p * 4
+      for (let c = 0; c < 3; c++) {
+        li.data[i + c] = Math.max(0, Math.min(255, li.data[i + c] + (fi.data[i + c] - ci.data[i + c])))
+      }
+      li.data[i + 3] = Math.max(li.data[i + 3], fi.data[i + 3])
+    }
+    lc.putImageData(li, 0, 0)
+    set({ rev: state.rev + 1 })
+    get().pushHistory('Eliminacion IA neuronal (LaMa)')
+    return true
   },
 
   applyAutoEnhance: () => {
