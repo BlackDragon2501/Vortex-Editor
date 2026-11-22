@@ -151,6 +151,18 @@ export function OptionsBar() {
         <span className="text-[11px] text-muted-foreground">Haz clic para seleccionar zonas del mismo color</span>
       </>
     ),
+    'mask-brush': (
+      <>
+        <SliderGroup label="Tamano" value={s.maskBrushSize} min={4} max={200} onChange={(v) => set({ maskBrushSize: v })} />
+        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+          <Switch checked={s.maskBrushSubtract} onCheckedChange={(v) => set({ maskBrushSubtract: v })} aria-label="Quitar seleccion" />
+          Quitar (Alt)
+        </label>
+        <span className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+          <Scan className="w-3 h-3" /> Marca el texto o la marca de agua y pulsa Eliminar seleccionado (IA)
+        </span>
+      </>
+    ),
     crop: (
       <div className="flex items-center gap-2">
         <span className="text-[11px] text-muted-foreground flex items-center gap-1.5">
@@ -549,6 +561,18 @@ export function OptionsBar() {
           </span>
           <div className="h-4 w-px bg-border shrink-0" aria-hidden />
           <div className="flex items-center gap-4">{groups[tool]}</div>
+          {s.selection && (
+            <>
+              <div className="h-4 w-px bg-border shrink-0" aria-hidden />
+              <Button
+                size="sm"
+                className="h-6 text-[11px] bg-amber-500 text-black hover:bg-amber-400 whitespace-nowrap"
+                onClick={() => s.setDialog('inpaint')}
+              >
+                <Scan className="w-3 h-3 mr-1" /> Eliminar seleccionado (IA)
+              </Button>
+            </>
+          )}
         </>
       )}
     </div>

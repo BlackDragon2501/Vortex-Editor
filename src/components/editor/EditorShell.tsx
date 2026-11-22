@@ -47,6 +47,7 @@ const TOOL_KEYS: Record<string, ToolId> = {
   m: 'rect-select',
   l: 'lasso',
   w: 'wand',
+  k: 'mask-brush',
   c: 'crop',
   i: 'eyedropper',
   j: 'heal',

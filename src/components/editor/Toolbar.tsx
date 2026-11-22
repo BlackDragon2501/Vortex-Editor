@@ -15,6 +15,7 @@ import {
   PaintBucket,
   Paintbrush,
   Pipette,
+  Highlighter,
   Blend,
   Pencil,
   PenTool,
@@ -49,6 +50,7 @@ const TOOL_GROUPS: ToolDef[][] = [
     { id: 'ellipse-select', icon: CircleDashed, label: 'Seleccion eliptica', shortcut: 'M' },
     { id: 'lasso', icon: Lasso, label: 'Lazo libre', shortcut: 'L' },
     { id: 'wand', icon: Wand2, label: 'Varita magica', shortcut: 'W' },
+    { id: 'mask-brush', icon: Highlighter, label: 'Pincel de seleccion: marca texto o marca de agua', shortcut: 'K' },
   ],
   [
     { id: 'crop', icon: Crop, label: 'Recorte', shortcut: 'C' },

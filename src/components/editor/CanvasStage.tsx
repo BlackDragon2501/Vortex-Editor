@@ -30,6 +30,8 @@ interface DragState {
   penMovedPx: number
   /** mezclador: pintura actual cargada en el pincel */
   paint: { r: number; g: number; b: number } | null
+  /** pincel de seleccion: modo sustraer activo en este gesto */
+  maskSubtract?: boolean
   /** transformacion: tirador activo y caja al iniciar el gesto */
   handle: TransformHandle | null
   boxStart: TransformBox | null
@@ -248,6 +250,14 @@ export function CanvasStage() {
     ctx.clearRect(0, 0, width, height)
     const st = store()
     const lw = 1 / st.zoom
+
+    // previsualizacion del pincel de seleccion mientras se marca
+    const drag = dragRef.current
+    if (drag && drag.tool === 'mask-brush' && drag.strokeCanvas) {
+      ctx.globalAlpha = 0.45
+      ctx.drawImage(drag.strokeCanvas, 0, 0)
+      ctx.globalAlpha = 1
+    }
 
     // hormigas en marcha: rect/ellipse/lasso usan ruta; wand/invert usan contorno
     if (st.selection) {
@@ -801,6 +811,39 @@ export function CanvasStage() {
         st.applyWandSelection(Math.floor(p.x), Math.floor(p.y), st.wandTolerance, st.wandContiguous)
         break
       }
+      case 'mask-brush': {
+        // pincel de seleccion: pinta la mascara directamente (marcar texto / marca de agua)
+        const subtract = e.altKey ? !st.maskBrushSubtract : st.maskBrushSubtract
+        const wc = document.createElement('canvas')
+        wc.width = st.width
+        wc.height = st.height
+        const wctx = wc.getContext('2d')!
+        if (subtract && st.selection) wctx.drawImage(st.selection.maskCanvas, 0, 0)
+        wctx.fillStyle = '#a78bfa'
+        const r0 = Math.max(2, st.maskBrushSize / 2)
+        wctx.beginPath()
+        wctx.arc(p.x, p.y, r0, 0, Math.PI * 2)
+        wctx.fill()
+        dragRef.current = {
+          tool: 'mask-brush',
+          startX: p.x,
+          startY: p.y,
+          lastX: p.x,
+          lastY: p.y,
+          points: [],
+          layerSnapshot: null,
+          strokeCanvas: wc,
+          moved: false,
+          cloneSource: null,
+          penMovedPx: 0,
+          paint: null,
+          handle: null,
+          boxStart: null,
+          maskSubtract: subtract,
+        }
+        drawOverlay()
+        break
+      }
       case 'clone': {
         // Alt + clic define el punto de origen del clon
         if (e.altKey) {
@@ -960,6 +1003,29 @@ export function CanvasStage() {
         drawOverlay()
         break
       }
+      case 'mask-brush': {
+        // estampa circulos a lo largo del trazo dentro de la mascara de trabajo
+        const wc = d.strokeCanvas
+        if (wc) {
+          const wctx = wc.getContext('2d')!
+          const radius = Math.max(2, st.maskBrushSize / 2)
+          wctx.save()
+          if (d.maskSubtract) wctx.globalCompositeOperation = 'destination-out'
+          const dist = Math.hypot(p.x - d.startX, p.y - d.startY)
+          const steps = Math.max(1, Math.ceil(dist / Math.max(1, radius / 3)))
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps
+            wctx.beginPath()
+            wctx.arc(d.startX + (p.x - d.startX) * t, d.startY + (p.y - d.startY) * t, radius, 0, Math.PI * 2)
+            wctx.fill()
+          }
+          wctx.restore()
+          d.startX = p.x
+          d.startY = p.y
+          drawOverlay()
+        }
+        break
+      }
       case 'heal':
       case 'dodge':
       case 'burn':
@@ -1085,6 +1151,25 @@ export function CanvasStage() {
           path.rect(r.x, r.y, r.w, r.h)
           st.setSelection(makeSelection('rect', path, st.width, st.height))
         }
+        break
+      }
+      case 'mask-brush': {
+        // consolida la mascara pintada como seleccion del editor
+        const wc = d.strokeCanvas
+        if (wc) {
+          const img = wc.getContext('2d')!.getImageData(0, 0, st.width, st.height)
+          const mask = new Uint8ClampedArray(st.width * st.height)
+          let n = 0
+          for (let i = 0; i < mask.length; i++) {
+            if (img.data[i * 4 + 3] > 127) {
+              mask[i] = 255
+              n++
+            }
+          }
+          if (n === 0) st.deselect()
+          else st.setSelection(makeSelectionFromMask('brush', mask, st.width, st.height))
+        }
+        drawOverlay()
         break
       }
       case 'ellipse-select': {
@@ -1283,6 +1368,8 @@ function cursorForTool(tool: string): string {
     case 'crop':
       return 'crosshair'
     case 'brush':
+      return 'crosshair'
+    case 'mask-brush':
       return 'crosshair'
     case 'pencil':
       return 'crosshair'

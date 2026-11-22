@@ -839,6 +839,7 @@ function InpaintDialog() {
   const [working, setWorking] = useState(false)
   const [cached, setCached] = useState<boolean | null>(null)
   const [backend, setBackend] = useState<'webgpu' | 'wasm' | null>(null)
+  const [detected, setDetected] = useState<'webgpu' | 'wasm' | null>(null)
   const [phase, setPhase] = useState('')
   const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null)
   const [tileInfo, setTileInfo] = useState('')
@@ -848,7 +849,28 @@ function InpaintDialog() {
 
   useEffect(() => {
     lamaModelCached().then(setCached)
+    // detecta la aceleracion disponible ANTES de ejecutar, para mostrar siempre
+    // al usuario que motor esta usando
+    let alive = true
+    const gpu = (navigator as unknown as { gpu?: { requestAdapter: () => Promise<unknown> } }).gpu
+    if (!gpu) {
+      setDetected('wasm')
+      return
+    }
+    gpu
+      .requestAdapter()
+      .then((a) => {
+        if (alive) setDetected(a ? 'webgpu' : 'wasm')
+      })
+      .catch(() => {
+        if (alive) setDetected('wasm')
+      })
+    return () => {
+      alive = false
+    }
   }, [])
+
+  const activeBackend = backend ?? detected
 
   const run = async () => {
     if (engine === 'classic') {
@@ -987,6 +1009,24 @@ function InpaintDialog() {
             </label>
           </RadioGroup>
 
+          {/* tarjeta de estado del motor: siempre visible, antes de ejecutar */}
+          <div className="rounded border border-border px-3 py-2 space-y-1">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-muted-foreground">Motor activo:</span>
+              <span className="font-medium text-foreground">
+                {engine === 'neural' ? 'IA neuronal LaMa' : 'Clasico (rapido, sin descarga)'}
+              </span>
+            </div>
+            {engine === 'neural' && (
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-muted-foreground">Aceleracion de tu dispositivo:</span>
+                <span className={activeBackend === 'webgpu' ? 'text-emerald-400' : 'text-foreground'}>
+                  {activeBackend === 'webgpu' ? 'GPU - WebGPU' : activeBackend === 'wasm' ? 'CPU - WASM SIMD' : 'Detectando...'}
+                </span>
+              </div>
+            )}
+          </div>
+
           {engine === 'neural' && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-[11px] text-muted-foreground">
@@ -995,14 +1035,6 @@ function InpaintDialog() {
                   {cached === null ? 'Comprobando...' : cached ? 'Descargado' : 'No descargado'}
                 </span>
               </div>
-              {backend && (
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                  <span>Aceleracion detectada:</span>
-                  <span className={backend === 'webgpu' ? 'text-emerald-400' : 'text-foreground'}>
-                    {backend === 'webgpu' ? 'GPU - WebGPU' : 'CPU - WASM SIMD'}
-                  </span>
-                </div>
-              )}
               {cached === false && !working && (
                 <Button variant="outline" size="sm" className="h-7 text-xs w-full" onClick={downloadModel}>
                   Descargar modelo ahora ({Math.round(LAMA_MODEL_BYTES / 1048576)} MB, una sola vez)

@@ -4,6 +4,7 @@ export type ToolId =
   | 'ellipse-select'
   | 'lasso'
   | 'wand'
+  | 'mask-brush'
   | 'crop'
   | 'eyedropper'
   | 'brush'
@@ -247,7 +248,7 @@ export interface HistoryEntry {
 }
 
 export interface Selection {
-  kind: 'rect' | 'ellipse' | 'lasso' | 'wand' | 'invert'
+  kind: 'rect' | 'ellipse' | 'lasso' | 'wand' | 'invert' | 'brush'
   path: Path2D
   bounds: { x: number; y: number; w: number; h: number }
   /** mascara de bytes por pixel (255 dentro, 0 fuera) para operaciones rapidas */

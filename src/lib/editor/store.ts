@@ -100,6 +100,8 @@ export interface EditorState {
   burnRange: 'shadows' | 'midtones' | 'highlights'
   blurBrushSize: number
   blurBrushStrength: number
+  maskBrushSize: number
+  maskBrushSubtract: boolean
   sharpenBrushSize: number
   sharpenBrushStrength: number
   gradientMode: 'fg-transparent' | 'fg-bg'
@@ -327,6 +329,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   burnRange: 'midtones',
   blurBrushSize: 60,
   blurBrushStrength: 50,
+  maskBrushSize: 28,
+  maskBrushSubtract: false,
   sharpenBrushSize: 60,
   sharpenBrushStrength: 50,
   gradientMode: 'fg-transparent',

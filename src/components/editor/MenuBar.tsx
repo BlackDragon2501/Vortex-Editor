@@ -163,6 +163,9 @@ export function MenuBar() {
               Deseleccionar <MenubarShortcut>Ctrl+D</MenubarShortcut>
             </MenubarItem>
             <MenubarItem onClick={store.invertSelection}>Invertir seleccion <MenubarShortcut>Shift+Ctrl+I</MenubarShortcut></MenubarItem>
+            <MenubarItem onClick={() => store.setDialog('inpaint')} disabled={!store.selection}>
+              Eliminar seleccionado (IA)...
+            </MenubarItem>
           </MenubarContent>
         </MenubarMenu>
 
